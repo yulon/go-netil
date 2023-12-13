@@ -3,6 +3,7 @@ package netil
 import (
 	"net"
 	"sync"
+	"time"
 )
 
 type waterWallIPInf struct {
@@ -34,7 +35,7 @@ func (ww *WaterWall) IsBlock(ip net.IP) bool {
 	defer ww.mtx.RUnlock()
 
 	ipInf, has := ww.ipInfs[ipStr]
-	return has && ipInf.BlockEndTime != 0 && ipInf.BlockEndTime > NowUnixMilli()
+	return has && ipInf.BlockEndTime != 0 && ipInf.BlockEndTime > time.Now().UnixMilli()
 }
 
 func (ww *WaterWall) IsBlockAddr(addr net.Addr) bool {
@@ -77,13 +78,13 @@ func (ww *WaterWall) Fail(ip net.IP, user string) bool {
 	case 2:
 		return false
 	case 3:
-		ipInf.BlockEndTime = NowUnixMilli() + 60*1000
+		ipInf.BlockEndTime = time.Now().UnixMilli() + 60*1000
 	case 4:
-		ipInf.BlockEndTime = NowUnixMilli() + 10*60*1000
+		ipInf.BlockEndTime = time.Now().UnixMilli() + 10*60*1000
 	case 5:
-		ipInf.BlockEndTime = NowUnixMilli() + 30*60*1000
+		ipInf.BlockEndTime = time.Now().UnixMilli() + 30*60*1000
 	case 6:
-		ipInf.BlockEndTime = NowUnixMilli() + 60*60*1000
+		ipInf.BlockEndTime = time.Now().UnixMilli() + 60*60*1000
 	default:
 		panic(ec)
 	}

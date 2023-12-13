@@ -1,161 +1,144 @@
 package netil
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync/atomic"
 	"time"
 )
 
 func Forward(src, dst net.Conn, buf []byte) {
-	ForwardTimeout(src, dst, buf, 0, 0)
+	ForwardTimeout(src, dst, buf, 3*time.Minute, 8*time.Second)
 }
 
-func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, halfClosedIdleTimeout time.Duration) {
+type forwardContext struct {
+	idleEnd    atomic.Int64
+	halfClosed atomic.Uintptr
+}
+
+func (fc *forwardContext) StartCloser(close func()) {
+	go func() {
+		for {
+			idleEnd := fc.idleEnd.Load()
+			if idleEnd == 0 {
+				panic(idleEnd)
+			}
+			delay := idleEnd - time.Now().UnixMilli()
+			if delay <= 0 {
+				close()
+				return
+			}
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+		}
+	}()
+}
+
+func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, halfIdleTimeout time.Duration) {
 	if len(buf) == 0 {
-		buf = AllocBuffer()
-		defer RecycleBuffer(buf)
+		buf = make([]byte, 4096)
 	}
 
-	ctx := &struct {
-		eofCnt atomic.Uintptr
-		expTS  atomic.Int64
-	}{}
+	closeAll := func() {
+		src.Close()
+		dst.Close()
+	}
+
+	fc := &forwardContext{}
 
 	if idleTimeout > 0 {
-		ctx.expTS.Store(NowUnixMilli() + idleTimeout.Milliseconds())
+		fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
+		fc.StartCloser(closeAll)
 	}
 
-	Go(func() {
-		buf2 := AllocBuffer()
-		defer RecycleBuffer(buf2)
+	go func() {
+		buf2 := make([]byte, 4096)
 
-		blockedHalfClosedIdleTimeout := false
 		for {
-			expTS := ctx.expTS.Load()
-			if expTS > 0 {
-				dst.SetReadDeadline(time.UnixMilli(expTS))
-			}
+			n, err := dst.Read(buf2)
 
-			n, re := dst.Read(buf2)
 			if n > 0 {
 				if idleTimeout > 0 {
-					ctx.expTS.Store(NowUnixMilli() + idleTimeout.Milliseconds())
-				} else if !blockedHalfClosedIdleTimeout && ctx.eofCnt.Load() == 1 {
-					blockedHalfClosedIdleTimeout = true
-					ctx.expTS.Store(0)
-					dst.SetReadDeadline(time.Time{})
+					fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
+				} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 {
+					fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
 				}
 
 				we := WriteAll(src, buf2[:n])
-				if we != nil {
-					src.Close()
-					dst.Close()
-					return
+				if we != nil && err == nil {
+					err = we
 				}
 			}
 
-			if re != nil {
-				if re == io.EOF {
-					if ctx.eofCnt.Add(1) == 1 {
-						dstTCPCon, ok := dst.(*net.TCPConn)
-						if ok {
-							dstTCPCon.CloseRead()
+			if err == nil {
+				continue
+			}
 
-							srcTCPCon, ok := src.(*net.TCPConn)
-							if ok {
-								srcTCPCon.CloseWrite()
-							}
-						}
-
-						oldExpTS := ctx.expTS.Load()
-						if halfClosedIdleTimeout > 0 {
-							newExpTS := NowUnixMilli() + halfClosedIdleTimeout.Milliseconds()
-							if newExpTS > oldExpTS && ctx.expTS.CompareAndSwap(oldExpTS, newExpTS) {
-								src.SetReadDeadline(time.UnixMilli(newExpTS))
-							}
-							return
-						}
-						if oldExpTS > 0 {
-							return
-						}
-					}
-				} else if errors.Is(re, os.ErrDeadlineExceeded) {
-					expTS := ctx.expTS.Load()
-					if expTS > 0 && NowUnixMilli() < expTS {
-						continue
-					}
-				}
-				dst.Close()
-				src.Close()
+			if fc.halfClosed.Swap(1) != 0 {
+				closeAll()
 				return
 			}
-		}
-	})
 
-	blockedHalfClosedIdleTimeout := false
+			if err == io.EOF {
+				dstTCPCon, ok := dst.(*net.TCPConn)
+				if ok {
+					dstTCPCon.CloseRead()
+				}
+				srcTCPCon, ok := src.(*net.TCPConn)
+				if ok {
+					srcTCPCon.CloseWrite()
+				}
+			}
+
+			fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
+			if idleTimeout == 0 {
+				fc.StartCloser(closeAll)
+			}
+			return
+		}
+	}()
+
 	for {
-		expTS := ctx.expTS.Load()
-		if expTS > 0 {
-			src.SetReadDeadline(time.UnixMilli(expTS))
-		}
+		n, err := src.Read(buf)
 
-		n, re := src.Read(buf)
 		if n > 0 {
 			if idleTimeout > 0 {
-				ctx.expTS.Store(NowUnixMilli() + idleTimeout.Milliseconds())
-			} else if !blockedHalfClosedIdleTimeout && ctx.eofCnt.Load() == 1 {
-				blockedHalfClosedIdleTimeout = true
-				ctx.expTS.Store(0)
-				src.SetReadDeadline(time.Time{})
+				fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
+			} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 {
+				fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
 			}
 
 			we := WriteAll(dst, buf[:n])
-			if we != nil {
-				dst.Close()
-				src.Close()
-				return
+			if we != nil && err == nil {
+				err = we
 			}
 		}
 
-		if re != nil {
-			if re == io.EOF {
-				if ctx.eofCnt.Add(1) == 1 {
-					srcTCPCon, ok := src.(*net.TCPConn)
-					if ok {
-						srcTCPCon.CloseRead()
+		if err == nil {
+			continue
+		}
 
-						dstTCPCon, ok := dst.(*net.TCPConn)
-						if ok {
-							dstTCPCon.CloseWrite()
-						}
-					}
-
-					oldExpTS := ctx.expTS.Load()
-					if halfClosedIdleTimeout > 0 {
-						newExpTS := NowUnixMilli() + halfClosedIdleTimeout.Milliseconds()
-						if newExpTS > oldExpTS && ctx.expTS.CompareAndSwap(oldExpTS, newExpTS) {
-							dst.SetReadDeadline(time.UnixMilli(newExpTS))
-						}
-						return
-					}
-					if oldExpTS > 0 {
-						return
-					}
-				}
-			} else if errors.Is(re, os.ErrDeadlineExceeded) {
-				expTS := ctx.expTS.Load()
-				if expTS > 0 && NowUnixMilli() < expTS {
-					continue
-				}
-			}
-			src.Close()
-			dst.Close()
+		if fc.halfClosed.Swap(1) != 0 {
+			closeAll()
 			return
 		}
+
+		if err == io.EOF {
+			srcTCPCon, ok := src.(*net.TCPConn)
+			if ok {
+				srcTCPCon.CloseRead()
+			}
+			dstTCPCon, ok := dst.(*net.TCPConn)
+			if ok {
+				dstTCPCon.CloseWrite()
+			}
+		}
+
+		fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
+		if idleTimeout == 0 {
+			fc.StartCloser(closeAll)
+		}
+		return
 	}
 }
 
@@ -177,7 +160,7 @@ func (s *forwardHalfState) IOTime() int64 {
 }
 
 func (s *forwardHalfState) ReadyIO() {
-	atomic.StoreInt64(&s.ioTime, NowUnixMilli())
+	atomic.StoreInt64(&s.ioTime, time.Now().UnixMilli())
 }
 
 type ForwardCloser struct {
@@ -231,7 +214,7 @@ func startHalfClosedKiller() {
 					sccs.PushBack(scc)
 
 				case <-time.Tick(time.Second):
-					now := NowUnixMilli()
+					now := time.Now().UnixMilli()
 					for it := sccs.Front(); it != nil; {
 						scc := it.Value.(*closedHalf)
 
@@ -272,7 +255,7 @@ func (fc *ForwardCloser) closeHalf(curHalfState, otherHalfState *forwardHalfStat
 		return nil
 	}
 
-	halfClosedTime := NowUnixMilli()
+	halfClosedTime := time.Now().UnixMilli()
 	otherHalfIOTime := otherHalfState.IOTime()
 
 	fc.mtx.Lock()
@@ -343,8 +326,7 @@ func ForwardPacket(pfc PacketForwardConn, buf []byte, listenPubToken string, lis
 	}
 
 	if len(buf) == 0 {
-		buf = AllocBuffer()
-		defer RecycleBuffer(buf)
+		buf = make([]byte, 4096)
 	}
 
 	for {
@@ -360,12 +342,10 @@ func ForwardPacket(pfc PacketForwardConn, buf []byte, listenPubToken string, lis
 				if err != nil {
 					return nil, err
 				}
-				Go(func() {
+				go func() {
 					defer pc.Close()
 
-					rbuf := AllocBuffer()
-					defer RecycleBuffer(rbuf)
-
+					rbuf := make([]byte, 4096)
 					for {
 						n, from, err := pc.ReadFrom(rbuf)
 						if err != nil {
@@ -376,7 +356,7 @@ func ForwardPacket(pfc PacketForwardConn, buf []byte, listenPubToken string, lis
 							return
 						}
 					}
-				})
+				}()
 				return pc, nil
 			})
 			if err != nil {

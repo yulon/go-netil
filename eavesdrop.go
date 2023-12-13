@@ -4,6 +4,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Eavesdropper struct {
@@ -382,15 +383,15 @@ func (edr *Eavesdropper) EnableReadWriteTime() bool {
 }
 
 func (edr *Eavesdropper) UpdateReadTime() {
-	atomic.StoreInt64(&edr.rTime, NowUnixMilli())
+	atomic.StoreInt64(&edr.rTime, time.Now().UnixMilli())
 }
 
 func (edr *Eavesdropper) UpdateWriteTime() {
-	atomic.StoreInt64(&edr.rTime, NowUnixMilli())
+	atomic.StoreInt64(&edr.rTime, time.Now().UnixMilli())
 }
 
 func (edr *Eavesdropper) UpdateReadWriteTime() {
-	t := NowUnixMilli()
+	t := time.Now().UnixMilli()
 	atomic.StoreInt64(&edr.rTime, t)
 	atomic.StoreInt64(&edr.wTime, t)
 }
@@ -763,11 +764,11 @@ func startTimeoutClosers() {
 		timeoutCloserCh = make(chan *timeoutCloser, 4096)
 		go func() {
 			tcs := list.New()
-			waitTi := NowUnixMilli()
+			waitTi := time.Now().UnixMilli()
 			waitDur := int64(30000)
 			ticker := time.Tick(time.Duration(waitDur) * time.Millisecond)
 			for {
-				now := NowUnixMilli()
+				now := time.Now().UnixMilli()
 				select {
 				case addTC := <-timeoutCloserCh:
 					added := false
@@ -852,7 +853,7 @@ func (ec *EavesdroppedConn) SetIdleTimeout(expired time.Duration, once bool) {
 	t := ec.ReadWriteTime()
 	expDur := int64(expired / time.Millisecond)
 	expTm := t + expDur
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	if !just && now >= expTm {
 		ec.Close()
@@ -883,7 +884,7 @@ func (ec *EavesdroppedConn) SetReadTimeout(expired time.Duration, once bool) {
 	t := ec.ReadTime()
 	expDur := int64(expired / time.Millisecond)
 	expTm := t + expDur
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	if !just && now >= expTm {
 		ec.Close()
@@ -914,7 +915,7 @@ func (ec *EavesdroppedConn) SetWriteTimeout(expired time.Duration, once bool) {
 	t := ec.WriteTime()
 	expDur := int64(expired / time.Millisecond)
 	expTm := t + expDur
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	if !just && now >= expTm {
 		ec.Close()
@@ -945,7 +946,7 @@ func (epc *EavesdroppedPacketConn) SetIdleTimeout(expired time.Duration, once bo
 	t := epc.ReadWriteTime()
 	expDur := int64(expired / time.Millisecond)
 	expTm := t + expDur
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	if !just && now >= expTm {
 		epc.Close()
@@ -976,7 +977,7 @@ func (epc *EavesdroppedPacketConn) SetReadTimeout(expired time.Duration, once bo
 	t := epc.ReadTime()
 	expDur := int64(expired / time.Millisecond)
 	expTm := t + expDur
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	if !just && now >= expTm {
 		epc.Close()
@@ -1007,7 +1008,7 @@ func (epc *EavesdroppedPacketConn) SetWriteTimeout(expired time.Duration, once b
 	t := epc.WriteTime()
 	expDur := int64(expired / time.Millisecond)
 	expTm := t + expDur
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	if !just && now >= expTm {
 		epc.Close()

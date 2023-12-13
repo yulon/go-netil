@@ -54,7 +54,7 @@ func NewSpeedLimiter(bytesPerSecond uint64) *SpeedLimiter {
 		return
 	}
 
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	n64 := uint64(n)
 
@@ -101,6 +101,8 @@ func NewSpeedLimiter(bytesPerSecond uint64) *SpeedLimiter {
 	}
 }*/
 
+const kb4 = 4 * 1024
+
 func (slr *SpeedLimiter) Wait(n int) {
 	if slr == nil || slr.GetSpeed() == 0 {
 		return
@@ -116,7 +118,7 @@ func (slr *SpeedLimiter) Wait(n int) {
 		return
 	}
 
-	now := NowUnixMilli()
+	now := time.Now().UnixMilli()
 
 	n64 := uint64(n)
 	if slr.o > 0 {
