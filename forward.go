@@ -9,7 +9,7 @@ import (
 )
 
 func Forward(src, dst net.Conn, buf []byte) {
-	ForwardTimeout(src, dst, buf, 3*time.Minute, 8*time.Second)
+	ForwardTimeout(src, dst, buf, 0, 8*time.Second)
 }
 
 type forwardContext struct {
@@ -22,7 +22,7 @@ func (fc *forwardContext) StartCloser(close func()) {
 		for {
 			idleEnd := fc.idleEnd.Load()
 			if idleEnd == 0 {
-				panic(idleEnd)
+				return
 			}
 			delay := idleEnd - time.Now().UnixMilli()
 			if delay <= 0 {
@@ -55,22 +55,23 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 		buf2 := make([]byte, 4096)
 
 		for {
-			n, err := dst.Read(buf2)
+			n, re := dst.Read(buf2)
 
 			if n > 0 {
 				if idleTimeout > 0 {
 					fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-				} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 {
-					fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
+				} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 && fc.idleEnd.Load() > 0 {
+					fc.idleEnd.Store(0)
 				}
 
 				we := WriteAll(src, buf2[:n])
-				if we != nil && err == nil {
-					err = we
+				if we != nil {
+					closeAll()
+					return
 				}
 			}
 
-			if err == nil {
+			if re == nil {
 				continue
 			}
 
@@ -79,17 +80,20 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 				return
 			}
 
-			if err == io.EOF {
-				dstTCPCon, ok := dst.(*net.TCPConn)
-				if ok {
-					dstTCPCon.CloseRead()
-				}
+			if re == io.EOF {
 				srcTCPCon, ok := src.(*net.TCPConn)
 				if ok {
 					srcTCPCon.CloseWrite()
 				}
+				dstTCPCon, ok := dst.(*net.TCPConn)
+				if ok {
+					dstTCPCon.CloseRead()
+				}
 			}
 
+			if halfIdleTimeout == 0 {
+				return
+			}
 			fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
 			if idleTimeout == 0 {
 				fc.StartCloser(closeAll)
@@ -99,22 +103,23 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 	}()
 
 	for {
-		n, err := src.Read(buf)
+		n, re := src.Read(buf)
 
 		if n > 0 {
 			if idleTimeout > 0 {
 				fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-			} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 {
-				fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
+			} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 && fc.idleEnd.Load() > 0 {
+				fc.idleEnd.Store(0)
 			}
 
 			we := WriteAll(dst, buf[:n])
-			if we != nil && err == nil {
-				err = we
+			if we != nil {
+				closeAll()
+				return
 			}
 		}
 
-		if err == nil {
+		if re == nil {
 			continue
 		}
 
@@ -123,17 +128,20 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 			return
 		}
 
-		if err == io.EOF {
-			srcTCPCon, ok := src.(*net.TCPConn)
-			if ok {
-				srcTCPCon.CloseRead()
-			}
+		if re == io.EOF {
 			dstTCPCon, ok := dst.(*net.TCPConn)
 			if ok {
 				dstTCPCon.CloseWrite()
 			}
+			srcTCPCon, ok := src.(*net.TCPConn)
+			if ok {
+				srcTCPCon.CloseRead()
+			}
 		}
 
+		if halfIdleTimeout == 0 {
+			return
+		}
 		fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
 		if idleTimeout == 0 {
 			fc.StartCloser(closeAll)
