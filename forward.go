@@ -9,7 +9,7 @@ import (
 )
 
 func Forward(src, dst net.Conn, buf []byte) {
-	ForwardTimeout(src, dst, buf, 0, 8*time.Second)
+	ForwardTimeout(src, dst, buf, 0, 15*time.Second)
 }
 
 type forwardContext struct {
@@ -44,11 +44,16 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 		dst.Close()
 	}
 
+	closeAllByIdle := func() {
+		closeAll()
+		//fmt.Println("netil: close idle", src.RemoteAddr(), "->", dst.RemoteAddr())
+	}
+
 	fc := &forwardContext{}
 
 	if idleTimeout > 0 {
 		fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-		fc.StartCloser(closeAll)
+		fc.StartCloser(closeAllByIdle)
 	}
 
 	go func() {
@@ -60,7 +65,7 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 			if n > 0 {
 				if idleTimeout > 0 {
 					fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-				} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 && fc.idleEnd.Load() > 0 {
+				} else if halfIdleTimeout > 0 {
 					fc.idleEnd.Store(0)
 				}
 
@@ -96,7 +101,7 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 			}
 			fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
 			if idleTimeout == 0 {
-				fc.StartCloser(closeAll)
+				fc.StartCloser(closeAllByIdle)
 			}
 			return
 		}
@@ -108,7 +113,7 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 		if n > 0 {
 			if idleTimeout > 0 {
 				fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-			} else if halfIdleTimeout > 0 && fc.halfClosed.Load() == 1 && fc.idleEnd.Load() > 0 {
+			} else if halfIdleTimeout > 0 {
 				fc.idleEnd.Store(0)
 			}
 
@@ -144,7 +149,7 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 		}
 		fc.idleEnd.Store(time.Now().UnixMilli() + halfIdleTimeout.Milliseconds())
 		if idleTimeout == 0 {
-			fc.StartCloser(closeAll)
+			fc.StartCloser(closeAllByIdle)
 		}
 		return
 	}
