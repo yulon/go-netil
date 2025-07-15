@@ -36,7 +36,7 @@ func (fc *forwardContext) StartCloser(close func()) {
 
 func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, halfIdleTimeout time.Duration) {
 	if len(buf) == 0 {
-		buf = make([]byte, 4096)
+		buf = make([]byte, 32*1024)
 	}
 
 	closeAll := func() {
@@ -57,7 +57,7 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 	}
 
 	go func() {
-		buf2 := make([]byte, 4096)
+		buf2 := make([]byte, 32*1024)
 
 		for {
 			n, re := dst.Read(buf2)
@@ -65,8 +65,8 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 			if n > 0 {
 				if idleTimeout > 0 {
 					fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-				} else if halfIdleTimeout > 0 {
-					fc.idleEnd.Store(0)
+				} else if halfIdleTimeout > 0 && fc.halfClosed.Load() != 0 {
+					fc.idleEnd.Store(0 /*time.Now().UnixMilli() + halfIdleTimeout.Milliseconds()*/)
 				}
 
 				we := WriteAll(src, buf2[:n])
@@ -113,8 +113,8 @@ func ForwardTimeout(src, dst net.Conn, buf []byte, idleTimeout time.Duration, ha
 		if n > 0 {
 			if idleTimeout > 0 {
 				fc.idleEnd.Store(time.Now().UnixMilli() + idleTimeout.Milliseconds())
-			} else if halfIdleTimeout > 0 {
-				fc.idleEnd.Store(0)
+			} else if halfIdleTimeout > 0 && fc.halfClosed.Load() != 0 {
+				fc.idleEnd.Store(0 /*time.Now().UnixMilli() + halfIdleTimeout.Milliseconds()*/)
 			}
 
 			we := WriteAll(dst, buf[:n])
